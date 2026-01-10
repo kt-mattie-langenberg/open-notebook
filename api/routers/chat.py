@@ -1,19 +1,32 @@
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from api.cognito_auth import cognito_config
+from api.permissions_service import (
+    NotFoundOrForbiddenError,
+    PermissionDeniedError,
+    check_chat_access,
+    check_notebook_access,
+    filter_accessible_chats,
+    get_notebook_with_access,
+    set_ownership,
+)
+from api.user_service import get_optional_user
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import ChatSession, Note, Notebook, Source
+from open_notebook.domain.user import User
 from open_notebook.exceptions import (
     NotFoundError,
 )
 from open_notebook.graphs.chat import graph as chat_graph
 
 router = APIRouter()
+
 
 # Request/Response models
 class CreateSessionRequest(BaseModel):
@@ -22,12 +35,21 @@ class CreateSessionRequest(BaseModel):
     model_override: Optional[str] = Field(
         None, description="Optional model override for this session"
     )
+    visibility: Literal["private", "shared"] = Field(
+        "private", description="Chat visibility: private (only you) or shared (all collaborators)"
+    )
 
 
 class UpdateSessionRequest(BaseModel):
     title: Optional[str] = Field(None, description="New session title")
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
+    )
+
+
+class UpdateVisibilityRequest(BaseModel):
+    visibility: Literal["private", "shared"] = Field(
+        ..., description="New visibility: private or shared"
     )
 
 
@@ -50,6 +72,10 @@ class ChatSessionResponse(BaseModel):
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
     )
+    # Multiuser fields
+    owner_id: Optional[str] = Field(None, description="Owner user ID")
+    visibility: str = Field("private", description="Chat visibility")
+    is_owner: Optional[bool] = Field(None, description="Whether current user is owner")
 
 
 class ChatSessionWithMessagesResponse(ChatSessionResponse):
@@ -90,32 +116,83 @@ class SuccessResponse(BaseModel):
     message: str = Field(..., description="Success message")
 
 
+def _session_to_response(
+    session: ChatSession,
+    notebook_id: Optional[str],
+    message_count: int = 0,
+    current_user: Optional[User] = None,
+) -> ChatSessionResponse:
+    """Convert ChatSession to response model."""
+    is_owner = None
+    if current_user and session.owner_id:
+        is_owner = session.owner_id == current_user.id
+
+    return ChatSessionResponse(
+        id=session.id or "",
+        title=session.title or "Untitled Session",
+        notebook_id=notebook_id,
+        created=str(session.created),
+        updated=str(session.updated),
+        message_count=message_count,
+        model_override=getattr(session, "model_override", None),
+        owner_id=session.owner_id,
+        visibility=session.visibility,
+        is_owner=is_owner,
+    )
+
+
+async def _get_notebook_for_session(session_id: str) -> Optional[str]:
+    """Get notebook ID for a chat session."""
+    full_session_id = (
+        session_id
+        if session_id.startswith("chat_session:")
+        else f"chat_session:{session_id}"
+    )
+    notebook_query = await repo_query(
+        "SELECT out FROM refers_to WHERE in = $session_id",
+        {"session_id": ensure_record_id(full_session_id)},
+    )
+    return notebook_query[0]["out"] if notebook_query else None
+
+
 @router.get("/chat/sessions", response_model=List[ChatSessionResponse])
-async def get_sessions(notebook_id: str = Query(..., description="Notebook ID")):
-    """Get all chat sessions for a notebook."""
+async def get_sessions(
+    notebook_id: str = Query(..., description="Notebook ID"),
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Get all accessible chat sessions for a notebook.
+
+    If multiuser is enabled:
+    - Returns your private chats
+    - Returns shared chats from all users
+
+    If multiuser is not enabled:
+    - Returns all chats
+    """
     try:
-        # Get notebook to verify it exists
+        # Get notebook and check access
         notebook = await Notebook.get(notebook_id)
         if not notebook:
-            raise HTTPException(status_code=404, detail="Notebook not found")
+            raise NotFoundOrForbiddenError("Notebook")
 
-        # Get sessions for this notebook
+        await check_notebook_access(notebook, user)
+
+        # Get all sessions for this notebook
         sessions = await notebook.get_chat_sessions()
 
+        # Filter by accessibility (private chats only visible to owner)
+        if cognito_config.is_configured:
+            sessions = await filter_accessible_chats(sessions, notebook, user)
+
         return [
-            ChatSessionResponse(
-                id=session.id or "",
-                title=session.title or "Untitled Session",
-                notebook_id=notebook_id,
-                created=str(session.created),
-                updated=str(session.updated),
-                message_count=0,  # TODO: Add message count if needed
-                model_override=getattr(session, "model_override", None),
-            )
+            _session_to_response(session, notebook_id, current_user=user)
             for session in sessions
         ]
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Notebook not found")
+        raise NotFoundOrForbiddenError("Notebook")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching chat sessions: {str(e)}")
         raise HTTPException(
@@ -124,35 +201,44 @@ async def get_sessions(notebook_id: str = Query(..., description="Notebook ID"))
 
 
 @router.post("/chat/sessions", response_model=ChatSessionResponse)
-async def create_session(request: CreateSessionRequest):
-    """Create a new chat session."""
+async def create_session(
+    request: CreateSessionRequest,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Create a new chat session.
+
+    If multiuser is enabled, you become the owner and can set visibility.
+    """
     try:
-        # Verify notebook exists
-        notebook = await Notebook.get(request.notebook_id)
+        # Get notebook and check edit access
+        notebook = await get_notebook_with_access(
+            request.notebook_id, user, require_edit=True
+        ) if cognito_config.is_configured else await Notebook.get(request.notebook_id)
+
         if not notebook:
-            raise HTTPException(status_code=404, detail="Notebook not found")
+            raise NotFoundOrForbiddenError("Notebook")
 
         # Create new session
         session = ChatSession(
             title=request.title or f"Chat Session {asyncio.get_event_loop().time():.0f}",
             model_override=request.model_override,
+            visibility=request.visibility,
         )
+
+        # Set ownership if multiuser enabled
+        set_ownership(session, user)
+
         await session.save()
 
         # Relate session to notebook
         await session.relate_to_notebook(request.notebook_id)
 
-        return ChatSessionResponse(
-            id=session.id or "",
-            title=session.title or "",
-            notebook_id=request.notebook_id,
-            created=str(session.created),
-            updated=str(session.updated),
-            message_count=0,
-            model_override=session.model_override,
-        )
+        return _session_to_response(session, request.notebook_id, current_user=user)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Notebook not found")
+        raise NotFoundOrForbiddenError("Notebook")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating chat session: {str(e)}")
         raise HTTPException(
@@ -163,11 +249,13 @@ async def create_session(request: CreateSessionRequest):
 @router.get(
     "/chat/sessions/{session_id}", response_model=ChatSessionWithMessagesResponse
 )
-async def get_session(session_id: str):
-    """Get a specific session with its messages."""
+async def get_session(
+    session_id: str,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """Get a specific session with its messages (with access check)."""
     try:
         # Get session
-        # Ensure session_id has proper table prefix
         full_session_id = (
             session_id
             if session_id.startswith("chat_session:")
@@ -175,7 +263,15 @@ async def get_session(session_id: str):
         )
         session = await ChatSession.get(full_session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            raise NotFoundOrForbiddenError("Chat session")
+
+        # Get notebook for access check
+        notebook_id = await _get_notebook_for_session(session_id)
+        notebook = await Notebook.get(notebook_id) if notebook_id else None
+
+        # Check access
+        if cognito_config.is_configured:
+            await check_chat_access(session, notebook, user)
 
         # Get session state from LangGraph to retrieve messages
         thread_state = chat_graph.get_state(
@@ -191,53 +287,39 @@ async def get_session(session_id: str):
                         id=getattr(msg, "id", f"msg_{len(messages)}"),
                         type=msg.type if hasattr(msg, "type") else "unknown",
                         content=msg.content if hasattr(msg, "content") else str(msg),
-                        timestamp=None,  # LangChain messages don't have timestamps by default
+                        timestamp=None,
                     )
                 )
 
-        # Find notebook_id (we need to query the relationship)
-        # Ensure session_id has proper table prefix
-        full_session_id = (
-            session_id
-            if session_id.startswith("chat_session:")
-            else f"chat_session:{session_id}"
+        response = _session_to_response(
+            session, notebook_id, message_count=len(messages), current_user=user
         )
-
-        notebook_query = await repo_query(
-            "SELECT out FROM refers_to WHERE in = $session_id",
-            {"session_id": ensure_record_id(full_session_id)},
-        )
-
-        notebook_id = notebook_query[0]["out"] if notebook_query else None
-
-        if not notebook_id:
-            # This might be an old session created before API migration
-            logger.warning(
-                f"No notebook relationship found for session {session_id} - may be an orphaned session"
-            )
 
         return ChatSessionWithMessagesResponse(
-            id=session.id or "",
-            title=session.title or "Untitled Session",
-            notebook_id=notebook_id,
-            created=str(session.created),
-            updated=str(session.updated),
-            message_count=len(messages),
+            **response.model_dump(),
             messages=messages,
-            model_override=getattr(session, "model_override", None),
         )
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundOrForbiddenError("Chat session")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching session: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching session: {str(e)}")
 
 
 @router.put("/chat/sessions/{session_id}", response_model=ChatSessionResponse)
-async def update_session(session_id: str, request: UpdateSessionRequest):
-    """Update session title."""
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Update session title or model override.
+
+    Only the owner can update a chat session.
+    """
     try:
-        # Ensure session_id has proper table prefix
         full_session_id = (
             session_id
             if session_id.startswith("chat_session:")
@@ -245,7 +327,12 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
         )
         session = await ChatSession.get(full_session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            raise NotFoundOrForbiddenError("Chat session")
+
+        # Check ownership (only owner can update)
+        if cognito_config.is_configured:
+            if not user or session.owner_id != user.id:
+                raise PermissionDeniedError("Only the chat owner can update this session")
 
         update_data = request.model_dump(exclude_unset=True)
 
@@ -257,40 +344,32 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
 
         await session.save()
 
-        # Find notebook_id
-        # Ensure session_id has proper table prefix
-        full_session_id = (
-            session_id
-            if session_id.startswith("chat_session:")
-            else f"chat_session:{session_id}"
-        )
-        notebook_query = await repo_query(
-            "SELECT out FROM refers_to WHERE in = $session_id",
-            {"session_id": ensure_record_id(full_session_id)},
-        )
-        notebook_id = notebook_query[0]["out"] if notebook_query else None
+        notebook_id = await _get_notebook_for_session(session_id)
 
-        return ChatSessionResponse(
-            id=session.id or "",
-            title=session.title or "",
-            notebook_id=notebook_id,
-            created=str(session.created),
-            updated=str(session.updated),
-            message_count=0,
-            model_override=session.model_override,
-        )
+        return _session_to_response(session, notebook_id, current_user=user)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundOrForbiddenError("Chat session")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating session: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating session: {str(e)}")
 
 
-@router.delete("/chat/sessions/{session_id}", response_model=SuccessResponse)
-async def delete_session(session_id: str):
-    """Delete a chat session."""
+@router.put("/chat/sessions/{session_id}/visibility", response_model=ChatSessionResponse)
+async def update_session_visibility(
+    session_id: str,
+    request: UpdateVisibilityRequest,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Update chat session visibility.
+
+    Only the owner can change visibility.
+    - private: Only you can see this chat
+    - shared: All notebook collaborators can see this chat
+    """
     try:
-        # Ensure session_id has proper table prefix
         full_session_id = (
             session_id
             if session_id.startswith("chat_session:")
@@ -298,24 +377,79 @@ async def delete_session(session_id: str):
         )
         session = await ChatSession.get(full_session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            raise NotFoundOrForbiddenError("Chat session")
+
+        # Check ownership (only owner can change visibility)
+        if cognito_config.is_configured:
+            if not user or session.owner_id != user.id:
+                raise PermissionDeniedError("Only the chat owner can change visibility")
+
+        session.visibility = request.visibility
+        await session.save()
+
+        notebook_id = await _get_notebook_for_session(session_id)
+
+        return _session_to_response(session, notebook_id, current_user=user)
+    except NotFoundError:
+        raise NotFoundOrForbiddenError("Chat session")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating session visibility: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error updating session visibility: {str(e)}"
+        )
+
+
+@router.delete("/chat/sessions/{session_id}", response_model=SuccessResponse)
+async def delete_session(
+    session_id: str,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Delete a chat session.
+
+    Only the owner can delete a chat session.
+    """
+    try:
+        full_session_id = (
+            session_id
+            if session_id.startswith("chat_session:")
+            else f"chat_session:{session_id}"
+        )
+        session = await ChatSession.get(full_session_id)
+        if not session:
+            raise NotFoundOrForbiddenError("Chat session")
+
+        # Check ownership (only owner can delete)
+        if cognito_config.is_configured:
+            if not user or session.owner_id != user.id:
+                raise PermissionDeniedError("Only the chat owner can delete this session")
 
         await session.delete()
 
         return SuccessResponse(success=True, message="Session deleted successfully")
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundOrForbiddenError("Chat session")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting session: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
 
 
 @router.post("/chat/execute", response_model=ExecuteChatResponse)
-async def execute_chat(request: ExecuteChatRequest):
-    """Execute a chat request and get AI response."""
+async def execute_chat(
+    request: ExecuteChatRequest,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    Execute a chat request and get AI response.
+
+    Requires access to the chat session (owner or shared chat collaborator).
+    """
     try:
-        # Verify session exists
-        # Ensure session_id has proper table prefix
+        # Verify session exists and check access
         full_session_id = (
             request.session_id
             if request.session_id.startswith("chat_session:")
@@ -323,7 +457,13 @@ async def execute_chat(request: ExecuteChatRequest):
         )
         session = await ChatSession.get(full_session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            raise NotFoundOrForbiddenError("Chat session")
+
+        # Check access
+        if cognito_config.is_configured:
+            notebook_id = await _get_notebook_for_session(request.session_id)
+            notebook = await Notebook.get(notebook_id) if notebook_id else None
+            await check_chat_access(session, notebook, user)
 
         # Determine model override (per-request override takes precedence over session-level)
         model_override = (
@@ -379,20 +519,28 @@ async def execute_chat(request: ExecuteChatRequest):
 
         return ExecuteChatResponse(session_id=request.session_id, messages=messages)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundOrForbiddenError("Chat session")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error executing chat: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error executing chat: {str(e)}")
 
 
 @router.post("/chat/context", response_model=BuildContextResponse)
-async def build_context(request: BuildContextRequest):
+async def build_context(
+    request: BuildContextRequest,
+    user: Optional[User] = Depends(get_optional_user),
+):
     """Build context for a notebook based on context configuration."""
     try:
-        # Verify notebook exists
-        notebook = await Notebook.get(request.notebook_id)
+        # Verify notebook exists and user has access
+        notebook = await get_notebook_with_access(
+            request.notebook_id, user
+        ) if cognito_config.is_configured else await Notebook.get(request.notebook_id)
+
         if not notebook:
-            raise HTTPException(status_code=404, detail="Notebook not found")
+            raise NotFoundOrForbiddenError("Notebook")
 
         context_data: dict[str, list[dict[str, str]]] = {"sources": [], "notes": []}
         total_content = ""
