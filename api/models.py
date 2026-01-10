@@ -26,6 +26,9 @@ class NotebookResponse(BaseModel):
     updated: str
     source_count: int
     note_count: int
+    # Multiuser fields
+    owner_id: Optional[str] = None
+    visibility: str = "private"
 
 
 # Search models

@@ -19,12 +19,120 @@ class Notebook(ObjectModel):
     description: str
     archived: Optional[bool] = False
 
+    # Ownership fields (added in migration 10)
+    owner_id: Optional[str] = None  # record<user> - required for new notebooks
+    visibility: Literal["private", "shared"] = "private"
+
     @field_validator("name")
     @classmethod
     def name_must_not_be_empty(cls, v):
         if not v.strip():
             raise InvalidInputError("Notebook name cannot be empty")
         return v
+
+    async def get_owner(self) -> Optional["User"]:
+        """Get the owner User object for this notebook."""
+        if not self.owner_id:
+            return None
+        from open_notebook.domain.user import User
+        return await User.get(self.owner_id)
+
+    async def get_collaborators(self) -> List["NotebookCollaborator"]:
+        """Get all collaborators for this notebook."""
+        from open_notebook.domain.collaboration import NotebookCollaborator
+        return await NotebookCollaborator.get_for_notebook(self.id)
+
+    async def add_collaborator(
+        self,
+        user_id: str,
+        role: str = "viewer",
+        invited_by: Optional[str] = None,
+    ) -> "NotebookCollaborator":
+        """Add a collaborator to this notebook."""
+        from datetime import datetime
+        from open_notebook.domain.collaboration import NotebookCollaborator
+
+        collab = NotebookCollaborator(
+            notebook_id=self.id,
+            user_id=user_id,
+            role=role,
+            invited_at=datetime.now(),
+            invited_by=invited_by,
+        )
+        await collab.save()
+        return collab
+
+    async def remove_collaborator(self, user_id: str) -> bool:
+        """Remove a collaborator from this notebook."""
+        from open_notebook.domain.collaboration import NotebookCollaborator
+
+        collab = await NotebookCollaborator.find(self.id, user_id)
+        if collab:
+            await collab.delete()
+            return True
+        return False
+
+    async def is_accessible_by(self, user_id: Optional[str]) -> bool:
+        """
+        Check if user can access (view) this notebook.
+
+        Access is granted if:
+        - Notebook visibility is 'shared' (all authenticated users)
+        - User is the owner
+        - User is a collaborator
+        """
+        # Shared notebooks accessible to all authenticated users
+        if self.visibility == "shared":
+            return user_id is not None
+
+        # No user = no access to private notebooks
+        if not user_id:
+            return False
+
+        # Owner always has access
+        if self.owner_id and self.owner_id == user_id:
+            return True
+
+        # Check collaboration
+        from open_notebook.domain.collaboration import NotebookCollaborator
+        collab = await NotebookCollaborator.find(self.id, user_id)
+        return collab is not None
+
+    async def can_edit(self, user_id: Optional[str]) -> bool:
+        """
+        Check if user can edit this notebook (add sources, notes, etc.).
+
+        Edit access is granted if:
+        - User is the owner
+        - User is a collaborator with editor or admin role
+        """
+        if not user_id:
+            return False
+
+        if self.owner_id and self.owner_id == user_id:
+            return True
+
+        from open_notebook.domain.collaboration import NotebookCollaborator
+        collab = await NotebookCollaborator.find(self.id, user_id)
+        return collab is not None and collab.can_edit()
+
+    async def can_admin(self, user_id: Optional[str]) -> bool:
+        """
+        Check if user can admin this notebook (share, delete, change settings).
+
+        Admin access is granted if:
+        - User is the owner
+        - User is a collaborator with admin role
+        """
+        if not user_id:
+            return False
+
+        if self.owner_id and self.owner_id == user_id:
+            return True
+
+        from open_notebook.domain.collaboration import NotebookCollaborator
+        collab = await NotebookCollaborator.find(self.id, user_id)
+        return collab is not None and collab.can_admin()
 
     async def get_sources(self) -> List["Source"]:
         try:
@@ -391,6 +499,43 @@ class ChatSession(ObjectModel):
     nullable_fields: ClassVar[set[str]] = {"model_override"}
     title: Optional[str] = None
     model_override: Optional[str] = None
+
+    # Ownership fields (added in migration 10)
+    owner_id: Optional[str] = None  # record<user> - creator of the chat
+    visibility: Literal["private", "shared"] = "private"
+
+    async def get_owner(self) -> Optional["User"]:
+        """Get the owner User object for this chat session."""
+        if not self.owner_id:
+            return None
+        from open_notebook.domain.user import User
+        return await User.get(self.owner_id)
+
+    async def is_accessible_by(
+        self,
+        user_id: Optional[str],
+        notebook: Optional["Notebook"] = None,
+    ) -> bool:
+        """
+        Check if user can access this chat session.
+
+        Access is granted if:
+        - User is the chat owner (private or shared chats)
+        - Chat is shared AND user has access to the notebook
+        """
+        # Owner always has access
+        if self.owner_id and self.owner_id == user_id:
+            return True
+
+        # Private chats only accessible to owner
+        if self.visibility == "private":
+            return False
+
+        # Shared chats accessible to notebook collaborators
+        if self.visibility == "shared" and notebook:
+            return await notebook.is_accessible_by(user_id)
+
+        return False
 
     async def relate_to_notebook(self, notebook_id: str) -> Any:
         if not notebook_id:
