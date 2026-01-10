@@ -1,5 +1,47 @@
-import axios, { AxiosResponse } from 'axios'
-import { getApiUrl } from '@/lib/config'
+import axios, { AxiosResponse } from "axios";
+import { getApiUrl } from "@/lib/config";
+import { isCognitoConfigured } from "@/lib/amplify-config";
+
+/**
+ * Get Cognito ID token from Amplify session.
+ * Returns null if not authenticated or Cognito not configured.
+ */
+async function getCognitoToken(): Promise<string | null> {
+  if (!isCognitoConfigured()) {
+    return null;
+  }
+
+  try {
+    // Dynamic import to avoid loading Amplify when not configured
+    const { fetchAuthSession } = await import("aws-amplify/auth");
+    const session = await fetchAuthSession({ forceRefresh: false });
+    return session.tokens?.idToken?.toString() ?? null;
+  } catch {
+    // Not authenticated or session expired
+    return null;
+  }
+}
+
+/**
+ * Get password token from localStorage (fallback for development).
+ */
+function getPasswordToken(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const authStorage = localStorage.getItem("auth-storage");
+    if (authStorage) {
+      const { state } = JSON.parse(authStorage);
+      return state?.token ?? null;
+    }
+  } catch (error) {
+    console.error("Error parsing auth storage:", error);
+  }
+
+  return null;
+}
 
 // API client with runtime-configurable base URL
 // The base URL is fetched from the API config endpoint on first request
@@ -10,57 +52,73 @@ import { getApiUrl } from '@/lib/config'
 export const apiClient = axios.create({
   timeout: 600000, // 600 seconds = 10 minutes
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
   withCredentials: false,
-})
+});
 
 // Request interceptor to add base URL and auth header
 apiClient.interceptors.request.use(async (config) => {
   // Set the base URL dynamically from runtime config
   if (!config.baseURL) {
-    const apiUrl = await getApiUrl()
-    config.baseURL = `${apiUrl}/api`
+    const apiUrl = await getApiUrl();
+    config.baseURL = `${apiUrl}/api`;
   }
 
-  if (typeof window !== 'undefined') {
-    const authStorage = localStorage.getItem('auth-storage')
-    if (authStorage) {
-      try {
-        const { state } = JSON.parse(authStorage)
-        if (state?.token) {
-          config.headers.Authorization = `Bearer ${state.token}`
-        }
-      } catch (error) {
-        console.error('Error parsing auth storage:', error)
-      }
-    }
+  // Try to get auth token (Cognito first, then password fallback)
+  let token: string | null = null;
+
+  // Try Cognito token first (primary auth method)
+  token = await getCognitoToken();
+
+  // Fall back to password token (development mode)
+  if (!token) {
+    token = getPasswordToken();
+  }
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
 
   // Handle FormData vs JSON content types
   if (config.data instanceof FormData) {
     // Remove any Content-Type header to let browser set multipart boundary
-    delete config.headers['Content-Type']
-  } else if (config.method && ['post', 'put', 'patch'].includes(config.method.toLowerCase())) {
-    config.headers['Content-Type'] = 'application/json'
+    delete config.headers["Content-Type"];
+  } else if (
+    config.method &&
+    ["post", "put", "patch"].includes(config.method.toLowerCase())
+  ) {
+    config.headers["Content-Type"] = "application/json";
   }
 
-  return config
-})
+  return config;
+});
 
 // Response interceptor for error handling
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
-      // Clear auth and redirect to login
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('auth-storage')
-        window.location.href = '/login'
+      // Clear auth state and redirect to login
+      if (typeof window !== "undefined") {
+        // Clear password auth storage
+        localStorage.removeItem("auth-storage");
+
+        // If Cognito is configured, also sign out from Cognito
+        if (isCognitoConfigured()) {
+          try {
+            const { signOut } = await import("aws-amplify/auth");
+            await signOut();
+          } catch {
+            // Ignore sign out errors
+          }
+        }
+
+        window.location.href = "/login";
       }
     }
-    return Promise.reject(error)
+    return Promise.reject(error);
   }
-)
+);
 
-export default apiClient
+export default apiClient;

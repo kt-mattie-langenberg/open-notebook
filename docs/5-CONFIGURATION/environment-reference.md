@@ -11,7 +11,36 @@ Comprehensive list of all environment variables available in Open Notebook.
 | `API_URL` | No | Auto-detected | URL where frontend reaches API (e.g., http://localhost:5055) |
 | `INTERNAL_API_URL` | No | http://localhost:5055 | Internal API URL for Next.js server-side proxying |
 | `API_CLIENT_TIMEOUT` | No | 300 | Client timeout in seconds (how long to wait for API response) |
-| `OPEN_NOTEBOOK_PASSWORD` | No | None | Password to protect Open Notebook instance |
+| `OPEN_NOTEBOOK_PASSWORD` | No | None | Password to protect Open Notebook instance (dev fallback) |
+
+---
+
+## Authentication: AWS Cognito
+
+For production multiuser deployments with AWS Cognito authentication.
+
+### Backend Environment Variables
+
+| Variable | Required? | Default | Description |
+|----------|-----------|---------|-------------|
+| `AWS_COGNITO_REGION` | If using Cognito | us-east-1 | AWS region for Cognito |
+| `AWS_COGNITO_USER_POOL_ID` | If using Cognito | None | Cognito User Pool ID |
+| `AWS_COGNITO_APP_CLIENT_ID` | If using Cognito | None | Cognito App Client ID |
+
+### Frontend Environment Variables
+
+| Variable | Required? | Default | Description |
+|----------|-----------|---------|-------------|
+| `NEXT_PUBLIC_AWS_COGNITO_REGION` | If using Cognito | us-east-1 | AWS region for Cognito |
+| `NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID` | If using Cognito | None | Cognito User Pool ID |
+| `NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID` | If using Cognito | None | Cognito App Client ID |
+| `NEXT_PUBLIC_AWS_COGNITO_IDENTITY_POOL_ID` | No | None | Cognito Identity Pool ID (for AWS credentials) |
+| `NEXT_PUBLIC_AWS_COGNITO_DOMAIN` | No | None | Cognito hosted UI domain (for OAuth flows) |
+| `NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_IN` | No | None | OAuth sign-in redirect URL |
+| `NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_OUT` | No | None | OAuth sign-out redirect URL |
+
+**Note:** When Cognito is configured, users must already exist in the Cognito User Pool.
+Self-registration is not supported - users are managed through the KlearTrust platform.
 
 ---
 
