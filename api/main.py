@@ -13,6 +13,7 @@ from api.auth import PasswordAuthMiddleware
 from api.routers import (
     auth,
     chat,
+    collaborators,
     config,
     context,
     embedding,
@@ -101,6 +102,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(config.router, prefix="/api", tags=["config"])
 app.include_router(notebooks.router, prefix="/api", tags=["notebooks"])
+app.include_router(collaborators.router, prefix="/api", tags=["collaborators"])
 app.include_router(search.router, prefix="/api", tags=["search"])
 app.include_router(models.router, prefix="/api", tags=["models"])
 app.include_router(transformations.router, prefix="/api", tags=["transformations"])
