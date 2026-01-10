@@ -1,0 +1,56 @@
+-- Migration 11: Notebook collaborators and invitation links
+-- Enables sharing notebooks with other users via collaboration and invitation links
+
+-- Collaborator table for notebook sharing
+DEFINE TABLE IF NOT EXISTS notebook_collaborator SCHEMAFULL;
+DEFINE FIELD notebook_id ON notebook_collaborator TYPE record<notebook>;
+DEFINE FIELD user_id ON notebook_collaborator TYPE record<user>;
+DEFINE FIELD role ON notebook_collaborator TYPE string DEFAULT "viewer";
+DEFINE FIELD invited_at ON notebook_collaborator TYPE option<datetime> DEFAULT time::now();
+DEFINE FIELD invited_by ON notebook_collaborator TYPE option<record<user>>;
+DEFINE FIELD created ON notebook_collaborator TYPE option<datetime> DEFAULT time::now() VALUE $before OR time::now();
+DEFINE FIELD updated ON notebook_collaborator TYPE option<datetime> DEFAULT time::now() VALUE time::now();
+
+-- Unique constraint: one collaboration per user per notebook
+DEFINE INDEX idx_collab_unique ON notebook_collaborator COLUMNS notebook_id, user_id UNIQUE;
+
+-- Index for querying collaborators by notebook
+DEFINE INDEX idx_collab_notebook ON notebook_collaborator COLUMNS notebook_id;
+
+-- Index for querying collaborations by user
+DEFINE INDEX idx_collab_user ON notebook_collaborator COLUMNS user_id;
+
+
+-- Invitation links table for shareable links
+DEFINE TABLE IF NOT EXISTS notebook_invitation SCHEMAFULL;
+DEFINE FIELD notebook_id ON notebook_invitation TYPE record<notebook>;
+DEFINE FIELD token ON notebook_invitation TYPE string;
+DEFINE FIELD role ON notebook_invitation TYPE string DEFAULT "viewer";
+DEFINE FIELD expires_at ON notebook_invitation TYPE option<datetime>;
+DEFINE FIELD max_uses ON notebook_invitation TYPE option<int>;
+DEFINE FIELD use_count ON notebook_invitation TYPE int DEFAULT 0;
+DEFINE FIELD created_by ON notebook_invitation TYPE record<user>;
+DEFINE FIELD created ON notebook_invitation TYPE option<datetime> DEFAULT time::now() VALUE $before OR time::now();
+DEFINE FIELD updated ON notebook_invitation TYPE option<datetime> DEFAULT time::now() VALUE time::now();
+
+-- Unique index for invitation tokens
+DEFINE INDEX idx_invitation_token ON notebook_invitation COLUMNS token UNIQUE;
+
+-- Index for querying invitations by notebook
+DEFINE INDEX idx_invitation_notebook ON notebook_invitation COLUMNS notebook_id;
+
+
+-- Event to clean up collaborators when notebook is deleted
+DEFINE EVENT IF NOT EXISTS notebook_delete_collaborators 
+ON TABLE notebook 
+WHEN $event = "DELETE" THEN {
+    DELETE notebook_collaborator WHERE notebook_id = $before.id;
+    DELETE notebook_invitation WHERE notebook_id = $before.id;
+};
+
+-- Event to clean up collaborators when user is deleted
+DEFINE EVENT IF NOT EXISTS user_delete_collaborators 
+ON TABLE user 
+WHEN $event = "DELETE" THEN {
+    DELETE notebook_collaborator WHERE user_id = $before.id;
+};

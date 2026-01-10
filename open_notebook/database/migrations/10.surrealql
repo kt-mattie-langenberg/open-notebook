@@ -1,0 +1,33 @@
+-- Migration 10: Multiuser support - Users and Ownership
+-- Creates user table, adds ownership to notebooks and chat sessions
+
+-- User table (synced from Cognito)
+DEFINE TABLE IF NOT EXISTS user SCHEMAFULL;
+DEFINE FIELD cognito_sub ON user TYPE string;
+DEFINE FIELD email ON user TYPE string;
+DEFINE FIELD display_name ON user TYPE option<string>;
+DEFINE FIELD avatar_url ON user TYPE option<string>;
+DEFINE FIELD created ON user TYPE option<datetime> DEFAULT time::now() VALUE $before OR time::now();
+DEFINE FIELD updated ON user TYPE option<datetime> DEFAULT time::now() VALUE time::now();
+
+-- Unique indexes for user lookup
+DEFINE INDEX idx_user_cognito_sub ON user COLUMNS cognito_sub UNIQUE;
+DEFINE INDEX idx_user_email ON user COLUMNS email UNIQUE;
+
+-- Add ownership and visibility to notebook
+-- owner_id is required for new notebooks, but we use option<record> for schema compatibility
+DEFINE FIELD owner_id ON notebook TYPE option<record<user>>;
+DEFINE FIELD visibility ON notebook TYPE string DEFAULT "private";
+
+-- Add ownership and visibility to chat_session
+DEFINE FIELD owner_id ON chat_session TYPE option<record<user>>;
+DEFINE FIELD visibility ON chat_session TYPE string DEFAULT "private";
+
+-- Index for querying notebooks by owner
+DEFINE INDEX idx_notebook_owner ON notebook COLUMNS owner_id;
+
+-- Index for querying shared notebooks
+DEFINE INDEX idx_notebook_visibility ON notebook COLUMNS visibility;
+
+-- Index for querying chat sessions by owner
+DEFINE INDEX idx_chat_session_owner ON chat_session COLUMNS owner_id;

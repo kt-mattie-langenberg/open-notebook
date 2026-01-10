@@ -1,0 +1,21 @@
+-- Migration 10 DOWN: Remove multiuser support
+
+-- Remove indexes
+REMOVE INDEX IF EXISTS idx_chat_session_owner ON chat_session;
+REMOVE INDEX IF EXISTS idx_notebook_visibility ON notebook;
+REMOVE INDEX IF EXISTS idx_notebook_owner ON notebook;
+
+-- Remove fields from chat_session
+REMOVE FIELD IF EXISTS visibility ON chat_session;
+REMOVE FIELD IF EXISTS owner_id ON chat_session;
+
+-- Remove fields from notebook
+REMOVE FIELD IF EXISTS visibility ON notebook;
+REMOVE FIELD IF EXISTS owner_id ON notebook;
+
+-- Remove user indexes
+REMOVE INDEX IF EXISTS idx_user_email ON user;
+REMOVE INDEX IF EXISTS idx_user_cognito_sub ON user;
+
+-- Remove user table
+REMOVE TABLE IF EXISTS user;

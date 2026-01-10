@@ -1,0 +1,20 @@
+-- Migration 11 DOWN: Remove notebook collaborators and invitations
+
+-- Remove events
+REMOVE EVENT IF EXISTS user_delete_collaborators ON user;
+REMOVE EVENT IF EXISTS notebook_delete_collaborators ON notebook;
+
+-- Remove invitation indexes
+REMOVE INDEX IF EXISTS idx_invitation_notebook ON notebook_invitation;
+REMOVE INDEX IF EXISTS idx_invitation_token ON notebook_invitation;
+
+-- Remove invitation table
+REMOVE TABLE IF EXISTS notebook_invitation;
+
+-- Remove collaborator indexes
+REMOVE INDEX IF EXISTS idx_collab_user ON notebook_collaborator;
+REMOVE INDEX IF EXISTS idx_collab_notebook ON notebook_collaborator;
+REMOVE INDEX IF EXISTS idx_collab_unique ON notebook_collaborator;
+
+-- Remove collaborator table
+REMOVE TABLE IF EXISTS notebook_collaborator;
