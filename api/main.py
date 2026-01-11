@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from api.auth import PasswordAuthMiddleware
+from api.auth import AuthMiddleware
 from api.routers import (
     auth,
     chat,
@@ -85,9 +85,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add password authentication middleware first
+# Add authentication middleware first
 # Exclude /api/auth/status and /api/config from authentication
-app.add_middleware(PasswordAuthMiddleware, excluded_paths=["/", "/health", "/docs", "/openapi.json", "/redoc", "/api/auth/status", "/api/config"])
+app.add_middleware(AuthMiddleware, excluded_paths=["/", "/health", "/docs", "/openapi.json", "/redoc", "/api/auth/status", "/api/config"])
 
 # Add CORS middleware last (so it processes first)
 app.add_middleware(

@@ -1,5 +1,6 @@
 'use client'
 
+import { useCognitoAuth } from '@/lib/auth/cognito-context'
 import { useAuth } from '@/lib/hooks/use-auth'
 import { useVersionCheck } from '@/lib/hooks/use-version-check'
 import { useRouter } from 'next/navigation'
@@ -15,9 +16,20 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode
 }) {
-  const { isAuthenticated, isLoading } = useAuth()
+  // Try Cognito auth first, then fallback to password auth
+  const cognitoAuth = useCognitoAuth()
+  const passwordAuth = useAuth()
   const router = useRouter()
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false)
+
+  // Determine which auth system is active and authenticated
+  const isAuthenticated = cognitoAuth.isConfigured 
+    ? cognitoAuth.isAuthenticated 
+    : passwordAuth.isAuthenticated
+    
+  const isLoading = cognitoAuth.isConfigured 
+    ? cognitoAuth.isLoading 
+    : passwordAuth.isLoading
 
   // Check for version updates once per session
   useVersionCheck()

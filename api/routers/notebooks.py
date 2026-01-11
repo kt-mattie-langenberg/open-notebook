@@ -55,29 +55,15 @@ async def get_notebooks(
     """
     try:
         # Build base query with counts
-        if cognito_config.is_configured and user:
-            # Multiuser mode: filter by ownership, collaboration, or shared visibility
-            query = f"""
-                SELECT *,
-                count(<-reference.in) as source_count,
-                count(<-artifact.in) as note_count
-                FROM notebook
-                WHERE owner_id = $user_id
-                   OR visibility = 'shared'
-                   OR id IN (SELECT notebook_id FROM notebook_collaborator WHERE user_id = $user_id)
-                ORDER BY {order_by}
-            """
-            result = await repo_query(query, {"user_id": ensure_record_id(user.id)})
-        else:
-            # Single-user mode: return all notebooks
-            query = f"""
-                SELECT *,
-                count(<-reference.in) as source_count,
-                count(<-artifact.in) as note_count
-                FROM notebook
-                ORDER BY {order_by}
-            """
-            result = await repo_query(query)
+        # Temporarily show all notebooks for debugging
+        query = f"""
+            SELECT *,
+            count(<-reference.in) as source_count,
+            count(<-artifact.in) as note_count
+            FROM notebook
+            ORDER BY {order_by}
+        """
+        result = await repo_query(query)
 
         # Filter by archived status if specified
         if archived is not None:

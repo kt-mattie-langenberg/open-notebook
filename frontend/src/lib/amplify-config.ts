@@ -10,13 +10,35 @@ import { cognitoUserPoolsTokenProvider } from "aws-amplify/auth/cognito";
 import { sessionStorage } from "aws-amplify/utils";
 
 /**
- * Check if Cognito is configured via environment variables.
+ * Check if Cognito is configured via environment variables or runtime fetch.
  */
-export function isCognitoConfigured(): boolean {
-  return !!(
+export async function isCognitoConfigured(): Promise<boolean> {
+  // First try build-time environment variables
+  const buildTimeConfigured = !!(
     process.env.NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID &&
     process.env.NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID
   );
+  
+  console.log('[Cognito Config] Build-time configured:', buildTimeConfigured);
+  
+  if (buildTimeConfigured) {
+    return true;
+  }
+  
+  // Fallback: fetch from runtime endpoint
+  try {
+    console.log('[Cognito Config] Fetching runtime configuration...');
+    const response = await fetch('/cognito-debug', { cache: 'no-store' });
+    if (response.ok) {
+      const data = await response.json();
+      console.log('[Cognito Config] Runtime configuration:', data);
+      return data.isConfigured || false;
+    }
+  } catch (error) {
+    console.error('[Cognito Config] Failed to fetch runtime configuration:', error);
+  }
+  
+  return false;
 }
 
 /**
@@ -38,15 +60,38 @@ interface CognitoUserPoolOnlyConfig {
 }
 
 /**
- * Get the Amplify Auth configuration from environment variables.
+ * Get the Amplify Auth configuration from environment variables or runtime fetch.
  */
-function getAuthConfig(): ResourcesConfig["Auth"] | null {
-  const userPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID;
-  const userPoolClientId = process.env.NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID;
-  const identityPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_IDENTITY_POOL_ID;
-  const domain = process.env.NEXT_PUBLIC_AWS_COGNITO_DOMAIN;
-  const redirectSignIn = process.env.NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_IN;
-  const redirectSignOut = process.env.NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_OUT;
+async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
+  let userPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID;
+  let userPoolClientId = process.env.NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID;
+  let identityPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_IDENTITY_POOL_ID;
+  let domain = process.env.NEXT_PUBLIC_AWS_COGNITO_DOMAIN;
+  let redirectSignIn = process.env.NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_IN;
+  let redirectSignOut = process.env.NEXT_PUBLIC_AWS_COGNITO_REDIRECT_SIGN_OUT;
+
+  // If not available at build time, fetch from runtime endpoint
+  if (!userPoolId || !userPoolClientId) {
+    try {
+      console.log('[Cognito Config] Fetching configuration from runtime endpoint...');
+      const response = await fetch('/cognito-debug', { cache: 'no-store' });
+      if (response.ok) {
+        const data = await response.json();
+        const config = data.cognitoConfig;
+        
+        userPoolId = config.userPoolId;
+        userPoolClientId = config.appClientId;
+        identityPoolId = config.identityPoolId;
+        domain = config.domain;
+        redirectSignIn = config.redirectSignIn;
+        redirectSignOut = config.redirectSignOut;
+        
+        console.log('[Cognito Config] Runtime configuration loaded:', config);
+      }
+    } catch (error) {
+      console.error('[Cognito Config] Failed to fetch runtime configuration:', error);
+    }
+  }
 
   if (!userPoolId || !userPoolClientId) {
     return null;
@@ -89,15 +134,15 @@ let isConfigured = false;
  * This should be called once during application initialization.
  * Safe to call multiple times - subsequent calls are no-ops.
  */
-export function configureAmplify(): boolean {
+export async function configureAmplify(): Promise<boolean> {
   if (isConfigured) {
     return true;
   }
 
-  const authConfig = getAuthConfig();
+  const authConfig = await getAuthConfig();
   if (!authConfig) {
     console.warn(
-      "Cognito not configured. Set NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID and NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID."
+      "Cognito not configured. Unable to get configuration from environment or runtime endpoint."
     );
     return false;
   }

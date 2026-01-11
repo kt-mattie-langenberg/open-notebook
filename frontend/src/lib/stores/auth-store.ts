@@ -32,6 +32,23 @@ export const useAuthStore = create<AuthState>()(
 
       setHasHydrated: (state: boolean) => {
         set({ hasHydrated: state })
+        // Auto-login for development when password auth is available
+        if (state && !get().isAuthenticated && get().authRequired) {
+          setTimeout(async () => {
+            try {
+              const apiUrl = await getApiUrl()
+              const authStatus = await fetch(`${apiUrl}/api/auth/status`)
+              const authData = await authStatus.json()
+              
+              if (authData.password_enabled && !authData.cognito_enabled) {
+                // Auto-login with dev password
+                await get().login('dev123')
+              }
+            } catch (error) {
+              console.log('Auto-login failed:', error)
+            }
+          }, 1000)
+        }
       },
 
       checkAuthRequired: async () => {

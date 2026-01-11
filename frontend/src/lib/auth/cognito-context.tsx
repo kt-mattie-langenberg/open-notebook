@@ -21,6 +21,7 @@ import {
   fetchUserAttributes,
   getCurrentUser,
   signIn,
+  confirmSignIn,
   signOut,
   type AuthUser,
 } from "aws-amplify/auth";
@@ -53,8 +54,12 @@ export interface CognitoAuthContextValue {
   idToken: string | null;
   /** Authentication error message */
   error: string | null;
+  /** Whether MFA code is required */
+  mfaRequired: boolean;
   /** Sign in with username/email and password */
   signIn: (username: string, password: string) => Promise<boolean>;
+  /** Confirm MFA code */
+  confirmMFA: (code: string) => Promise<boolean>;
   /** Sign out the current user */
   signOut: () => Promise<void>;
   /** Get a fresh ID token (for API calls) */
@@ -85,14 +90,43 @@ export function CognitoAuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CognitoUser | null>(null);
   const [idToken, setIdToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mfaRequired, setMfaRequired] = useState(false);
 
-  const isConfigured = useMemo(() => {
-    // Configure Amplify on first render
-    if (isCognitoConfigured()) {
-      configureAmplify();
-      return true;
-    }
-    return false;
+  const [isConfigured, setIsConfigured] = useState(false);
+
+  // Configure Cognito on mount
+  useEffect(() => {
+    let mounted = true;
+    
+    const setupCognito = async () => {
+      console.log('[CognitoAuthProvider] Checking if Cognito is configured...');
+      
+      try {
+        const configured = await isCognitoConfigured();
+        console.log('[CognitoAuthProvider] Cognito configured check result:', configured);
+        
+        if (configured && mounted) {
+          console.log('[CognitoAuthProvider] Setting up Amplify...');
+          const amplifyConfigured = await configureAmplify();
+          console.log('[CognitoAuthProvider] Amplify configuration result:', amplifyConfigured);
+          setIsConfigured(amplifyConfigured);
+        } else if (mounted) {
+          console.log('[CognitoAuthProvider] Cognito is NOT configured');
+          setIsConfigured(false);
+        }
+      } catch (error) {
+        console.error('[CognitoAuthProvider] Error setting up Cognito:', error);
+        if (mounted) {
+          setIsConfigured(false);
+        }
+      }
+    };
+
+    setupCognito();
+    
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   /**
@@ -181,7 +215,8 @@ export function CognitoAuthProvider({ children }: { children: ReactNode }) {
           if (step === "CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED") {
             setError("Password change required. Please contact your administrator.");
           } else if (step === "CONFIRM_SIGN_IN_WITH_TOTP_CODE") {
-            setError("MFA code required. MFA is not yet supported in this interface.");
+            setMfaRequired(true);
+            setError(null); // Clear error since MFA is expected
           } else {
             setError(`Additional verification required: ${step}`);
           }
@@ -206,6 +241,42 @@ export function CognitoAuthProvider({ children }: { children: ReactNode }) {
         } else {
           setError("An unexpected error occurred during sign in.");
         }
+        return false;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [isConfigured, refreshSession]
+  );
+
+  /**
+   * Confirm MFA code.
+   */
+  const confirmMFA = useCallback(
+    async (code: string): Promise<boolean> => {
+      if (!isConfigured) {
+        setError("Cognito authentication is not configured");
+        return false;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await confirmSignIn({ challengeResponse: code });
+
+        if (result.isSignedIn) {
+          setMfaRequired(false);
+          await refreshSession();
+          return true;
+        }
+
+        setError("Invalid MFA code. Please try again.");
+        return false;
+      } catch (error: any) {
+        setError(
+          error.message || "MFA verification failed. Please try again."
+        );
         return false;
       } finally {
         setIsLoading(false);
@@ -281,7 +352,9 @@ export function CognitoAuthProvider({ children }: { children: ReactNode }) {
       user,
       idToken,
       error,
+      mfaRequired,
       signIn: handleSignIn,
+      confirmMFA,
       signOut: handleSignOut,
       getIdToken,
       clearError,
@@ -293,7 +366,9 @@ export function CognitoAuthProvider({ children }: { children: ReactNode }) {
       user,
       idToken,
       error,
+      mfaRequired,
       handleSignIn,
+      confirmMFA,
       handleSignOut,
       getIdToken,
       clearError,

@@ -7,7 +7,8 @@ import { isCognitoConfigured } from "@/lib/amplify-config";
  * Returns null if not authenticated or Cognito not configured.
  */
 async function getCognitoToken(): Promise<string | null> {
-  if (!isCognitoConfigured()) {
+  const cognitoConfigured = await isCognitoConfigured();
+  if (!cognitoConfigured) {
     return null;
   }
 
@@ -105,13 +106,14 @@ apiClient.interceptors.response.use(
         localStorage.removeItem("auth-storage");
 
         // If Cognito is configured, also sign out from Cognito
-        if (isCognitoConfigured()) {
-          try {
+        try {
+          const cognitoConfigured = await isCognitoConfigured();
+          if (cognitoConfigured) {
             const { signOut } = await import("aws-amplify/auth");
             await signOut();
-          } catch {
-            // Ignore sign out errors
           }
+        } catch {
+          // Ignore sign out errors or configuration check failures
         }
 
         window.location.href = "/login";

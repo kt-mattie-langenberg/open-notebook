@@ -85,7 +85,6 @@ async function fetchConfig(): Promise<AppConfig> {
   console.log('🔧 [Config] NEXT_PUBLIC_API_URL from build:', envApiUrl || '(not set)')
 
   // STEP 3: Smart default - infer API URL from current frontend URL
-  // If frontend is at http://10.20.30.20:8502, API should be at http://10.20.30.20:5055
   let defaultApiUrl = 'http://localhost:5055'
 
   if (typeof window !== 'undefined') {
@@ -93,12 +92,14 @@ async function fetchConfig(): Promise<AppConfig> {
     const protocol = window.location.protocol
     console.log('🔧 [Config] Current frontend URL:', `${protocol}//${hostname}${window.location.port ? ':' + window.location.port : ''}`)
 
-    // If not localhost, use the same hostname with port 5055
+    // For GitHub Codespaces and similar environments where Next.js is proxying,
+    // use relative URLs to leverage Next.js API rewrites instead of direct port access
     if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-      defaultApiUrl = `${protocol}//${hostname}:5055`
-      console.log('🔧 [Config] Detected remote hostname, using:', defaultApiUrl)
+      // Use empty string for relative URLs - Next.js will proxy /api/* to backend
+      defaultApiUrl = ''
+      console.log('🔧 [Config] Detected remote hostname, using Next.js proxy (relative URLs)')
     } else {
-      console.log('🔧 [Config] Detected localhost, using:', defaultApiUrl)
+      console.log('🔧 [Config] Detected localhost, using direct backend URL:', defaultApiUrl)
     }
   }
 

@@ -32,13 +32,16 @@ export function LoginForm() {
     isLoading: cognitoLoading,
     isAuthenticated: cognitoAuthenticated,
     error: cognitoError,
+    mfaRequired,
     signIn: cognitoSignIn,
+    confirmMFA,
     clearError: clearCognitoError,
   } = useCognitoAuth()
 
   // Form state for Cognito
   const [email, setEmail] = useState('')
   const [cognitoPassword, setCognitoPassword] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
 
   // Auth status from API
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
@@ -178,6 +181,20 @@ export function LoginForm() {
       if (success) {
         router.push('/notebooks')
       }
+      // If MFA is required, the form will show MFA input automatically
+    }
+  }
+
+  // Handle MFA submission
+  const handleMFASubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    clearCognitoError()
+
+    if (mfaCode.trim()) {
+      const success = await confirmMFA(mfaCode.trim())
+      if (success) {
+        router.push('/notebooks')
+      }
     }
   }
 
@@ -203,65 +220,126 @@ export function LoginForm() {
           <CardHeader className="text-center">
             <CardTitle>Open Notebook</CardTitle>
             <CardDescription>
-              Sign in with your KlearTrust account
+              {mfaRequired 
+                ? "Enter your MFA code to complete sign in" 
+                : "Sign in with your KlearTrust account"
+              }
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleCognitoSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={isLoading}
-                  autoComplete="email"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={cognitoPassword}
-                  onChange={(e) => setCognitoPassword(e.target.value)}
-                  disabled={isLoading}
-                  autoComplete="current-password"
-                />
-              </div>
-
-              {error && (
-                <div className="flex items-start gap-2 text-red-600 text-sm">
-                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span>{error}</span>
+            {mfaRequired ? (
+              // MFA Code Form
+              <form onSubmit={handleMFASubmit} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="mfaCode">MFA Code</Label>
+                  <Input
+                    id="mfaCode"
+                    type="text"
+                    placeholder="000000"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value)}
+                    disabled={isLoading}
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    pattern="[0-9]{6}"
+                  />
                 </div>
-              )}
 
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={isLoading || !email.trim() || !cognitoPassword}
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Signing in...
-                  </>
-                ) : (
-                  'Sign In'
+                {error && (
+                  <div className="flex items-start gap-2 text-red-600 text-sm">
+                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    <span>{error}</span>
+                  </div>
                 )}
-              </Button>
 
-              {configInfo && (
-                <div className="text-xs text-center text-muted-foreground pt-2 border-t">
-                  <div>Version {configInfo.version}</div>
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={isLoading || !mfaCode.trim()}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Verifying...
+                    </>
+                  ) : (
+                    'Verify MFA Code'
+                  )}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    setMfaCode('');
+                    clearCognitoError();
+                    // Reset to login form - user would need to sign in again
+                    window.location.reload();
+                  }}
+                  disabled={isLoading}
+                >
+                  Back to Login
+                </Button>
+              </form>
+            ) : (
+              // Username/Password Form
+              <form onSubmit={handleCognitoSubmit} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    disabled={isLoading}
+                    autoComplete="email"
+                  />
                 </div>
-              )}
-            </form>
+
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="••••••••"
+                    value={cognitoPassword}
+                    onChange={(e) => setCognitoPassword(e.target.value)}
+                    disabled={isLoading}
+                    autoComplete="current-password"
+                  />
+                </div>
+
+                {error && (
+                  <div className="flex items-start gap-2 text-red-600 text-sm">
+                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={isLoading || !email.trim() || !cognitoPassword}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Signing in...
+                    </>
+                  ) : (
+                    'Sign In'
+                  )}
+                </Button>
+              </form>
+            )}
+
+            {configInfo && (
+              <div className="text-xs text-center text-muted-foreground pt-4 border-t mt-4">
+                <div>Version {configInfo.version}</div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
