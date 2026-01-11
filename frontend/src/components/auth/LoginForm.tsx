@@ -1,34 +1,28 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuth } from '@/lib/hooks/use-auth'
-import { useAuthStore } from '@/lib/stores/auth-store'
-import { useCognitoAuth } from '@/lib/auth'
-import { getConfig, getApiUrl } from '@/lib/config'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { AlertCircle, Loader2 } from 'lucide-react'
+import { Label } from '@/components/ui/label'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
+import { getConfig, getApiUrl } from '@/lib/config'
+import { useCognitoAuth } from '@/lib/auth/cognito-context'
+import { useAuthStore } from '@/lib/stores/auth-store'
 
 interface AuthStatus {
   auth_enabled: boolean
-  auth_method: 'cognito' | 'password' | 'none'
+  auth_method: 'cognito' | 'none'
   cognito_enabled: boolean
-  password_enabled: boolean
 }
 
 export function LoginForm() {
-  // Password auth state
-  const [password, setPassword] = useState('')
-  const { login: passwordLogin, isLoading: passwordLoading, error: passwordError } = useAuth()
-  const { authRequired, checkAuthRequired, hasHydrated, isAuthenticated } = useAuthStore()
+  const { hasHydrated } = useAuthStore()
 
   // Cognito auth state
   const {
-    isConfigured: cognitoConfigured,
     isLoading: cognitoLoading,
     isAuthenticated: cognitoAuthenticated,
     error: cognitoError,
@@ -94,12 +88,6 @@ export function LoginForm() {
           return
         }
 
-        // If password auth and already authenticated
-        if (data.password_enabled && !data.cognito_enabled && isAuthenticated) {
-          router.push('/notebooks')
-          return
-        }
-
         setConnectionError(null)
       } catch (error) {
         console.error('Error checking auth status:', error)
@@ -114,7 +102,7 @@ export function LoginForm() {
     }
 
     void checkAuth()
-  }, [hasHydrated, cognitoAuthenticated, isAuthenticated, router])
+  }, [hasHydrated, cognitoAuthenticated, router])
 
   // Redirect after successful Cognito login
   useEffect(() => {
@@ -171,6 +159,39 @@ export function LoginForm() {
     )
   }
 
+  // Auth not configured - show error
+  if (!authStatus?.cognito_enabled) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <CardTitle>Configuration Required</CardTitle>
+            <CardDescription>
+              Authentication is not configured
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex items-start gap-2 text-amber-600 text-sm">
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  AWS Cognito must be configured to use this application.
+                  Please set the required environment variables.
+                </div>
+              </div>
+
+              {configInfo && (
+                <div className="text-xs text-center text-muted-foreground pt-4 border-t">
+                  <div>Version {configInfo.version}</div>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   // Handle Cognito login
   const handleCognitoSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -198,198 +219,133 @@ export function LoginForm() {
     }
   }
 
-  // Handle password login
-  const handlePasswordSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (password.trim()) {
-      const success = await passwordLogin(password)
-      if (success) {
-        router.push('/notebooks')
-      }
-    }
-  }
-
-  const isLoading = cognitoLoading || passwordLoading
-  const error = cognitoError || passwordError
-
   // Cognito login form
-  if (authStatus?.cognito_enabled) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <CardTitle>Open Notebook</CardTitle>
-            <CardDescription>
-              {mfaRequired 
-                ? "Enter your MFA code to complete sign in" 
-                : "Sign in with your KlearTrust account"
-              }
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {mfaRequired ? (
-              // MFA Code Form
-              <form onSubmit={handleMFASubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="mfaCode">MFA Code</Label>
-                  <Input
-                    id="mfaCode"
-                    type="text"
-                    placeholder="000000"
-                    value={mfaCode}
-                    onChange={(e) => setMfaCode(e.target.value)}
-                    disabled={isLoading}
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    pattern="[0-9]{6}"
-                  />
-                </div>
-
-                {error && (
-                  <div className="flex items-start gap-2 text-red-600 text-sm">
-                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={isLoading || !mfaCode.trim()}
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Verifying...
-                    </>
-                  ) : (
-                    'Verify MFA Code'
-                  )}
-                </Button>
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => {
-                    setMfaCode('');
-                    clearCognitoError();
-                    // Reset to login form - user would need to sign in again
-                    window.location.reload();
-                  }}
-                  disabled={isLoading}
-                >
-                  Back to Login
-                </Button>
-              </form>
-            ) : (
-              // Username/Password Form
-              <form onSubmit={handleCognitoSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    placeholder="you@example.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    disabled={isLoading}
-                    autoComplete="email"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    placeholder="••••••••"
-                    value={cognitoPassword}
-                    onChange={(e) => setCognitoPassword(e.target.value)}
-                    disabled={isLoading}
-                    autoComplete="current-password"
-                  />
-                </div>
-
-                {error && (
-                  <div className="flex items-start gap-2 text-red-600 text-sm">
-                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={isLoading || !email.trim() || !cognitoPassword}
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Signing in...
-                    </>
-                  ) : (
-                    'Sign In'
-                  )}
-                </Button>
-              </form>
-            )}
-
-            {configInfo && (
-              <div className="text-xs text-center text-muted-foreground pt-4 border-t mt-4">
-                <div>Version {configInfo.version}</div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  // Password login form (fallback/development)
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle>Open Notebook</CardTitle>
           <CardDescription>
-            Enter your password to access the application
+            {mfaRequired 
+              ? "Enter your MFA code to complete sign in" 
+              : "Sign in with your KlearTrust account"
+            }
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            <div>
-              <Input
-                type="password"
-                placeholder="Password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isLoading}
-              />
+          {mfaRequired ? (
+            // MFA Code Form
+            <form onSubmit={handleMFASubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="mfaCode">MFA Code</Label>
+                <Input
+                  id="mfaCode"
+                  type="text"
+                  placeholder="000000"
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  disabled={cognitoLoading}
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  pattern="[0-9]{6}"
+                />
+              </div>
+
+              {cognitoError && (
+                <div className="flex items-start gap-2 text-red-600 text-sm">
+                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <span>{cognitoError}</span>
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={cognitoLoading || !mfaCode.trim()}
+              >
+                {cognitoLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  'Verify MFA Code'
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setMfaCode('');
+                  clearCognitoError();
+                  // Reset to login form - user would need to sign in again
+                  window.location.reload();
+                }}
+                disabled={cognitoLoading}
+              >
+                Back to Login
+              </Button>
+            </form>
+          ) : (
+            // Username/Password Form
+            <form onSubmit={handleCognitoSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={cognitoLoading}
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="••••••••"
+                  value={cognitoPassword}
+                  onChange={(e) => setCognitoPassword(e.target.value)}
+                  disabled={cognitoLoading}
+                  autoComplete="current-password"
+                />
+              </div>
+
+              {cognitoError && (
+                <div className="flex items-start gap-2 text-red-600 text-sm">
+                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <span>{cognitoError}</span>
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={cognitoLoading || !email.trim() || !cognitoPassword}
+              >
+                {cognitoLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Signing in...
+                  </>
+                ) : (
+                  'Sign In'
+                )}
+              </Button>
+            </form>
+          )}
+
+          {configInfo && (
+            <div className="text-xs text-center text-muted-foreground pt-4 border-t mt-4">
+              <div>Version {configInfo.version}</div>
             </div>
-
-            {error && (
-              <div className="flex items-center gap-2 text-red-600 text-sm">
-                <AlertCircle className="h-4 w-4" />
-                {error}
-              </div>
-            )}
-
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isLoading || !password.trim()}
-            >
-              {isLoading ? 'Signing in...' : 'Sign In'}
-            </Button>
-
-            {configInfo && (
-              <div className="text-xs text-center text-muted-foreground pt-2 border-t">
-                <div>Version {configInfo.version}</div>
-                <div className="font-mono text-[10px]">{configInfo.apiUrl}</div>
-              </div>
-            )}
-          </form>
+          )}
         </CardContent>
       </Card>
     </div>

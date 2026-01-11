@@ -9,35 +9,44 @@ import { Amplify, type ResourcesConfig } from "aws-amplify";
 import { cognitoUserPoolsTokenProvider } from "aws-amplify/auth/cognito";
 import { sessionStorage } from "aws-amplify/utils";
 
+// Cache for Cognito configuration check
+let cognitoConfiguredCache: boolean | undefined = undefined;
+
 /**
  * Check if Cognito is configured via environment variables or runtime fetch.
+ * Results are cached to avoid repeated network requests.
  */
 export async function isCognitoConfigured(): Promise<boolean> {
+  // Return cached result if available
+  if (cognitoConfiguredCache !== undefined) {
+    return cognitoConfiguredCache;
+  }
+  
   // First try build-time environment variables
   const buildTimeConfigured = !!(
     process.env.NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID &&
     process.env.NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID
   );
   
-  console.log('[Cognito Config] Build-time configured:', buildTimeConfigured);
-  
   if (buildTimeConfigured) {
+    cognitoConfiguredCache = true;
     return true;
   }
   
-  // Fallback: fetch from runtime endpoint
+  // Fallback: fetch from runtime endpoint (only once)
   try {
-    console.log('[Cognito Config] Fetching runtime configuration...');
     const response = await fetch('/cognito-debug', { cache: 'no-store' });
     if (response.ok) {
       const data = await response.json();
-      console.log('[Cognito Config] Runtime configuration:', data);
-      return data.isConfigured || false;
+      const isConfigured: boolean = data.isConfigured || false;
+      cognitoConfiguredCache = isConfigured;
+      return isConfigured;
     }
   } catch (error) {
     console.error('[Cognito Config] Failed to fetch runtime configuration:', error);
   }
   
+  cognitoConfiguredCache = false;
   return false;
 }
 
@@ -59,10 +68,19 @@ interface CognitoUserPoolOnlyConfig {
   };
 }
 
+// Cache for auth configuration
+let authConfigCache: ResourcesConfig["Auth"] | null | undefined = undefined;
+
 /**
  * Get the Amplify Auth configuration from environment variables or runtime fetch.
+ * Results are cached to avoid repeated network requests.
  */
 async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
+  // Return cached result if available
+  if (authConfigCache !== undefined) {
+    return authConfigCache;
+  }
+
   let userPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_USER_POOL_ID;
   let userPoolClientId = process.env.NEXT_PUBLIC_AWS_COGNITO_APP_CLIENT_ID;
   let identityPoolId = process.env.NEXT_PUBLIC_AWS_COGNITO_IDENTITY_POOL_ID;
@@ -73,7 +91,6 @@ async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
   // If not available at build time, fetch from runtime endpoint
   if (!userPoolId || !userPoolClientId) {
     try {
-      console.log('[Cognito Config] Fetching configuration from runtime endpoint...');
       const response = await fetch('/cognito-debug', { cache: 'no-store' });
       if (response.ok) {
         const data = await response.json();
@@ -85,8 +102,6 @@ async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
         domain = config.domain;
         redirectSignIn = config.redirectSignIn;
         redirectSignOut = config.redirectSignOut;
-        
-        console.log('[Cognito Config] Runtime configuration loaded:', config);
       }
     } catch (error) {
       console.error('[Cognito Config] Failed to fetch runtime configuration:', error);
@@ -94,6 +109,7 @@ async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
   }
 
   if (!userPoolId || !userPoolClientId) {
+    authConfigCache = null;
     return null;
   }
 
@@ -121,9 +137,11 @@ async function getAuthConfig(): Promise<ResourcesConfig["Auth"] | null> {
     };
   }
 
-  return {
+  authConfigCache = {
     Cognito: cognitoConfig,
   } as ResourcesConfig["Auth"];
+  
+  return authConfigCache;
 }
 
 let isConfigured = false;

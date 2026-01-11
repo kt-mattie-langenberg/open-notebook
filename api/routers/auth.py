@@ -1,12 +1,9 @@
 """
 Authentication router for Open Notebook API.
 
-Provides endpoints to check authentication status and method.
-Supports AWS Cognito (primary) and password auth (dev fallback).
+Provides endpoints to check authentication status and user info.
+Uses AWS Cognito for authentication.
 """
-
-import os
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 
@@ -24,28 +21,20 @@ async def get_auth_status():
     """
     Check authentication configuration status.
 
-    Returns information about which authentication methods are available.
+    Returns information about Cognito authentication configuration.
     This endpoint is public (excluded from auth middleware).
     """
     cognito_enabled = cognito_config.is_configured
-    password_enabled = bool(os.environ.get("OPEN_NOTEBOOK_PASSWORD"))
 
-    # Determine primary auth method
     if cognito_enabled:
-        auth_method = "cognito"
         message = "AWS Cognito authentication is enabled"
-    elif password_enabled:
-        auth_method = "password"
-        message = "Password authentication is enabled (development mode)"
     else:
-        auth_method = "none"
-        message = "No authentication configured - all requests allowed"
+        message = "Authentication not configured - set AWS_COGNITO_USER_POOL_ID and AWS_COGNITO_APP_CLIENT_ID"
 
     return {
-        "auth_enabled": cognito_enabled or password_enabled,
-        "auth_method": auth_method,
+        "auth_enabled": cognito_enabled,
+        "auth_method": "cognito" if cognito_enabled else "none",
         "cognito_enabled": cognito_enabled,
-        "password_enabled": password_enabled,
         "message": message,
         # Include Cognito config for frontend (non-sensitive info only)
         "cognito": {
@@ -67,13 +56,10 @@ async def get_current_user_info(
     Returns user claims from the Cognito JWT token.
     Requires authentication.
     """
-    # Get auth method from request state (set by middleware)
-    auth_method = getattr(request.state, "auth_method", "cognito")
-
     return {
         "sub": cognito_user.sub,
         "email": cognito_user.email,
         "email_verified": cognito_user.email_verified,
         "cognito_username": cognito_user.cognito_username,
-        "auth_method": auth_method,
+        "auth_method": "cognito",
     }

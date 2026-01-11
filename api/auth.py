@@ -1,15 +1,11 @@
 """
 Authentication middleware for Open Notebook.
 
-Supports two authentication methods:
-1. AWS Cognito JWT tokens (primary, required for production)
-2. Simple password auth (fallback for local development only)
-
+Uses AWS Cognito JWT tokens for authentication.
 All requests require authentication - no anonymous access is permitted.
 Users must already exist in the KlearTrust Cognito User Pool.
 """
 
-import os
 from typing import Optional
 
 from fastapi import HTTPException
@@ -24,20 +20,15 @@ from api.cognito_auth import CognitoUser, cognito_config, verify_cognito_token
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """
-    Unified authentication middleware supporting Cognito JWT and password auth.
+    Cognito JWT authentication middleware.
 
-    Authentication priority:
-    1. If Cognito is configured, try to verify as Cognito JWT token
-    2. If Cognito fails or not configured, try password auth (dev fallback)
-    3. If neither succeeds, return 401
-
-    All requests to protected endpoints require authentication.
+    Verifies JWT tokens from AWS Cognito User Pool.
+    All requests to protected endpoints require a valid Cognito token.
     No anonymous access is permitted.
     """
 
     def __init__(self, app, excluded_paths: Optional[list] = None):
         super().__init__(app)
-        self.password = os.environ.get("OPEN_NOTEBOOK_PASSWORD")
         self.excluded_paths = excluded_paths or [
             "/",
             "/health",
@@ -58,13 +49,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        # Check if any auth method is configured
-        if not cognito_config.is_configured and not self.password:
-            # No auth configured - this should not happen in production
-            logger.warning(
-                "No authentication configured. Set AWS_COGNITO_USER_POOL_ID or OPEN_NOTEBOOK_PASSWORD."
+        # Check if Cognito is configured
+        if not cognito_config.is_configured:
+            logger.error(
+                "Cognito not configured. Set AWS_COGNITO_USER_POOL_ID and AWS_COGNITO_APP_CLIENT_ID."
             )
-            return await call_next(request)
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Authentication service not configured"},
+            )
 
         # Get authorization header
         auth_header = request.headers.get("Authorization")
@@ -87,43 +80,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Try Cognito authentication first (primary method)
-        cognito_user: Optional[CognitoUser] = None
-        if cognito_config.is_configured:
-            try:
-                cognito_user = await verify_cognito_token(token)
-                # Store user in request state for downstream handlers
-                request.state.cognito_user = cognito_user
-                request.state.auth_method = "cognito"
-                return await call_next(request)
-            except HTTPException as e:
-                # If Cognito verification fails with 401, try password fallback
-                if e.status_code != 401:
-                    return JSONResponse(
-                        status_code=e.status_code,
-                        content={"detail": e.detail},
-                    )
-                # Continue to password fallback
-                logger.debug("Cognito auth failed, trying password fallback")
-
-        # Fallback to password authentication (development only)
-        if self.password and token == self.password:
-            request.state.cognito_user = None
-            request.state.auth_method = "password"
-            logger.debug("Authenticated via password (dev mode)")
+        # Verify Cognito JWT token
+        try:
+            cognito_user = await verify_cognito_token(token)
+            # Store user in request state for downstream handlers
+            request.state.cognito_user = cognito_user
+            request.state.auth_method = "cognito"
             return await call_next(request)
-
-        # All authentication methods failed
-        if cognito_config.is_configured:
+        except HTTPException as e:
             return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or expired Cognito token"},
+                status_code=e.status_code,
+                content={"detail": e.detail},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        else:
+        except Exception as e:
+            logger.error(f"Unexpected authentication error: {e}")
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Invalid password"},
+                content={"detail": "Authentication failed"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
@@ -134,38 +108,3 @@ PasswordAuthMiddleware = AuthMiddleware
 
 # HTTPBearer security scheme for OpenAPI documentation
 security = HTTPBearer(auto_error=False)
-
-
-def check_api_password(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-) -> bool:
-    """
-    Utility function to check API password.
-    Can be used as a dependency in individual routes if needed.
-
-    Note: This is for backward compatibility. New code should use
-    get_current_cognito_user from cognito_auth.py instead.
-    """
-    password = os.environ.get("OPEN_NOTEBOOK_PASSWORD")
-
-    # No password set, allow access (should not happen in production)
-    if not password:
-        return True
-
-    # No credentials provided
-    if not credentials:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing authorization",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Check password
-    if credentials.credentials != password:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return True

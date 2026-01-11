@@ -9,7 +9,7 @@ import os
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from loguru import logger
@@ -201,19 +201,29 @@ async def get_current_cognito_user(
 
 
 async def get_optional_cognito_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Optional[CognitoUser]:
     """
     FastAPI dependency to optionally get the current user.
 
-    Returns None if no credentials provided or Cognito not configured.
-    Raises HTTPException only if credentials are provided but invalid.
+    Returns the CognitoUser if authenticated via middleware, None otherwise.
+    Does NOT raise an exception for missing authentication.
 
-    Useful for endpoints that behave differently for authenticated vs anonymous users.
-    Note: For this application, anonymous access is not permitted, so this is mainly
-    for backward compatibility during transition.
+    Note: For this application, anonymous access is not permitted.
+    This is mainly for transition/backward compatibility.
     """
+    # If middleware already authenticated via Cognito, return that user
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method == "cognito":
+        return getattr(request.state, "cognito_user", None)
+
+    # No middleware auth - try verifying ourselves (fallback for edge cases)
     if not cognito_config.is_configured or not credentials:
         return None
 
-    return await verify_cognito_token(credentials.credentials)
+    try:
+        return await verify_cognito_token(credentials.credentials)
+    except HTTPException:
+        # Optional = return None on failure instead of raising
+        return None
